@@ -1,0 +1,23 @@
+#!/usr/bin/env zsh
+
+set -u
+
+if (( $# == 0 )); then
+    print -ru2 "usage: ${0:t} <pattern>..."
+    exit 2
+fi
+
+for cmd in zoxide code; do
+    if ! command -v "$cmd" > /dev/null 2>&1; then
+        print -ru2 "${0:t}: $cmd is not installed or not on PATH"
+        exit 127
+    fi
+done
+
+target_dir=$(zoxide query -- "$@" 2> /dev/null)
+if [[ -z "$target_dir" ]]; then
+    print -ru2 "${0:t}: no directory found for pattern: $*"
+    exit 1
+fi
+
+code "$target_dir"

@@ -1,0 +1,96 @@
+#!/usr/bin/env zsh
+#
+# ghq で管理しているリポジトリへ fzf で選んで cd する。
+#
+#   gcd [query]   fzf で選んで cd（query は初期クエリ。1 件に絞れたら即移動）
+#   Ctrl-]        同上をキーバインドから
+#
+# cd は呼び出し元のシェルで実行しないと効かないため、bin/ の実行スクリプトではなく
+# .zshrc から source する関数として置いている。
+
+# ghq list -p の各行を「フルパス<TAB>ghq root からの相対パス」にして fzf に渡し、
+# 選ばれたフルパスを stdout に出す。
+__gcd_select() {
+  emulate -L zsh
+
+  local cmd
+  for cmd in ghq fzf; do
+    if (( ! $+commands[$cmd] )); then
+      print -u2 "gcd: $cmd が見つかりません"
+      return 1
+    fi
+  done
+
+  local -a roots lines
+  local p r rel
+  roots=(${(f)"$(command ghq root --all)"})
+  for p in ${(f)"$(command ghq list -p)"}; do
+    rel=$p
+    for r in $roots; do
+      if [[ $p == $r/* ]]; then
+        rel=${p#$r/}
+        break
+      fi
+    done
+    lines+=("$p"$'\t'"$rel")
+  done
+
+  if (( ! $#lines )); then
+    print -u2 "gcd: ghq 管理下のリポジトリがありません"
+    return 1
+  fi
+
+  # プレビューは fzf が $SHELL -c で実行する。zsh でも bash でも動くよう、グロブを使わず
+  # README の候補名を順に試す。
+  local preview='git -C {1} log --oneline --decorate --color=always -10 2>/dev/null
+echo
+for f in README.md README.markdown README.rst README.txt README; do
+  if [ -f {1}/"$f" ]; then
+    if command -v bat >/dev/null 2>&1; then
+      bat --color=always --style=plain --line-range=:80 {1}/"$f"
+    else
+      head -n 80 {1}/"$f"
+    fi
+    break
+  fi
+done'
+
+  local selected
+  selected=$(print -rl -- $lines | command fzf \
+    --delimiter=$'\t' --with-nth=2 \
+    --query="$*" --select-1 --exit-0 \
+    --height=60% --layout=reverse \
+    --preview="$preview" --preview-window=right,60%) || return
+
+  print -r -- "${selected%%$'\t'*}"
+}
+
+# oh-my-zsh の git プラグインなどが gcd を alias で定義していると、関数定義が parse error になる。
+unalias gcd 2>/dev/null
+
+# emulate -L zsh を置かないのは、cd で走る chpwd フックをユーザーのオプションのまま動かすため。
+gcd() {
+  local dir
+  dir=$(__gcd_select "$@") || return
+  builtin cd -- "$dir"
+}
+
+# accept-line 経由で cd するのは、プロンプトの再描画や precmd フックを通常のコマンド実行と
+# 同じ経路で走らせるため。入力途中のコマンドラインは push-line で退避され、次のプロンプトに戻る。
+__gcd_widget() {
+  emulate -L zsh
+  local dir
+  dir=$(__gcd_select)
+  if [[ -z $dir ]]; then
+    zle reset-prompt
+    return 0
+  fi
+  zle push-line
+  BUFFER="builtin cd -- ${(q)dir}"
+  zle accept-line
+}
+
+if [[ -o interactive ]]; then
+  zle -N __gcd_widget
+  bindkey '^]' __gcd_widget
+fi
